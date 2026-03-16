@@ -1,64 +1,71 @@
-name: Build EDK2 SD Drivers
+name: Build SD/MMC UEFI Drivers
 
 on:
-  workflow_dispatch: # 允许手动触发
-  push:
-    branches: [ main ]
+  # 允许你手动触发工作流
+  workflow_dispatch:
+  # 也可根据需要，允许在向 main 分支 push 时自动触发
+  # push:
+  #   branches: [ "main" ]
 
 jobs:
-  build-drivers:
+  build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 可以指定要编译的架构，X64 适用于你的 NUC
+        arch: [X64]
+        # 可以选择 DEBUG 或 RELEASE 版本
+        target: [RELEASE] # 或 DEBUG
 
     steps:
-    - name: Checkout edk2
-      uses: actions/checkout@v4
-      with:
-        repository: tianocore/edk2
-        ref: master # 或者指定某个稳定 tag，如 edk2-stable202311
-        submodules: recursive # 必须递归克隆子模块
-        fetch-depth: 1
+      # 1. 检出你的仓库 (如果需要存放额外脚本或配置文件)
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Install Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential uuid-dev iasl git nasm python3-distutils gcc-multilib
-        # EDK II 需要特定的 Python 包
-        pip3 install --user -U pip
-        pip3 install --user -r edk2/BaseTools/requirements.txt
+      # 2. 安装编译工具链和依赖
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential uuid-dev iasl git nasm python3-distutils
 
-    - name: Setup EDK II Environment
-      run: |
-        cd edk2
-        # 初始化环境变量
-        make -C BaseTools
-        source edksetup.sh
+      # 3. 克隆 EDK2 主仓库
+      - name: Clone EDK2
+        run: |
+          git clone https://github.com/tianocore/edk2.git
+          cd edk2
+          # 更新子模块，这对于编译很多组件是必要的
+          git submodule update --init --recursive
 
-    - name: Build SdDxe and SdMmcPciHcDxe
-      run: |
-        cd edk2
-        # 编译 X64 架构的 RELEASE 版本
-        # -p 指定平台描述文件 (使用 MdeModulePkg.dsc 作为最小依赖集)
-        # -m 指定具体要编译的模块 inf 文件
-        # -a 指定架构 (X64, IA32, AARCH64, RISCV64 等)
-        # -b 指定构建类型 (RELEASE, DEBUG)
-        # -t 指定工具链 (GCC5 是 Ubuntu 上常用的)
-        
-        echo "Starting build for X64..."
-        build -a X64 -p MdeModulePkg/MdeModulePkg.dsc -m MdeModulePkg/Bus/Sd/SdDxe/SdDxe.inf -m MdeModulePkg/Bus/Pci/SdMmcPciHcDxe/SdMmcPciHcDxe.inf -b RELEASE -t GCC5
+      # 4. 设置 EDK2 编译环境
+      - name: Set up EDK2 build environment
+        run: |
+          cd edk2
+          # 使 edksetup.sh 脚本可用
+          . edksetup.sh
+          # 编译 BaseTools，这是编译任何东西前的必要步骤
+          make -C BaseTools
 
-    - name: Locate and Verify Outputs
-      run: |
-        cd edk2
-        # 查找生成的文件
-        find Build -name "SdDxe.efi" -o -name "SdMmcPciHcDxe.efi"
-        # 创建输出目录方便上传
-        mkdir -p output
-        cp Build/MdeModule/RELEASE_GCC5/X64/MdeModulePkg/Bus/Sd/SdDxe/OUTPUT/SdDxe.efi output/
-        cp Build/MdeModule/RELEASE_GCC5/X64/MdeModulePkg/Bus/Pci/SdMmcPciHcDxe/OUTPUT/SdMmcPciHcDxe.efi output/
+      # 5. 执行编译
+      #    这里我们直接使用 build 命令编译 MdeModulePkg 中的这两个驱动
+      - name: Build Drivers
+        run: |
+          cd edk2
+          # 重新加载环境变量（有些步骤之间环境会丢失）
+          . edksetup.sh
+          # 编译 SdMmcPciHcDxe
+          build -a ${{ matrix.arch }} -t GCC5 -b ${{ matrix.target }} -p MdeModulePkg/MdeModulePkg.dsc -m MdeModulePkg/Bus/Pci/SdMmcPciHcDxe/SdMmcPciHcDxe.inf
+          # 编译 SdDxe
+          build -a ${{ matrix.arch }} -t GCC5 -b ${{ matrix.target }} -p MdeModulePkg/MdeModulePkg.dsc -m MdeModulePkg/Bus/Sd/SdDxe/SdDxe.inf
 
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: EDK2-SD-Drivers-X64
-        path: edk2/output/*.efi
-        retention-days: 7
+      # 6. 上传编译好的驱动文件作为工作流产物
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          # 产物名称，包含架构和目标信息以便区分
+          name: sd-mmc-drivers-${{ matrix.arch }}-${{ matrix.target }}
+          # 指定要上传的文件路径
+          path: |
+            edk2/Build/MdeModule/RELEASE_GCC5/${{ matrix.arch }}/SdMmcPciHcDxe.efi
+            edk2/Build/MdeModule/RELEASE_GCC5/${{ matrix.arch }}/SdDxe.efi
+          # 如果产物较大且不需要长期保留，可以设置保留天数
+          retention-days: 30
