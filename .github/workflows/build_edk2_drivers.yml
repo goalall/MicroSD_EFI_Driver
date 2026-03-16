@@ -1,9 +1,7 @@
 name: Build SD/MMC UEFI Drivers
 
 on:
-  # 允许你手动触发工作流
-  workflow_dispatch:
-  # 也可根据需要，允许在向 main 分支 push 时自动触发
+  workflow_dispatch:  # 允许手动触发
   # push:
   #   branches: [ "main" ]
 
@@ -12,60 +10,90 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # 可以指定要编译的架构，X64 适用于你的 NUC
         arch: [X64]
-        # 可以选择 DEBUG 或 RELEASE 版本
-        target: [RELEASE] # 或 DEBUG
+        target: [RELEASE]
 
     steps:
-      # 1. 检出你的仓库 (如果需要存放额外脚本或配置文件)
+      # 1. 检出代码
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. 安装编译工具链和依赖
-      - name: Install build dependencies
+      # 2. 设置 Node.js 24（即使 EDK2 不依赖 Node，但为了满足环境要求）
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # 3. 安装编译依赖
+      - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential uuid-dev iasl git nasm python3-distutils
+          sudo apt-get install -y \
+            build-essential \
+            uuid-dev \
+            iasl \
+            git \
+            nasm \
+            python3 \
+            python3-distutils \
+            python3-pip
 
-      # 3. 克隆 EDK2 主仓库
-      - name: Clone EDK2
+      # 4. 验证 Python 和 Node 版本（仅用于确认环境）
+      - name: Check versions
+        run: |
+          python3 --version
+          node --version
+          gcc --version
+
+      # 5. 克隆 EDK2 并更新子模块
+      - name: Clone EDK2 with submodules
         run: |
           git clone https://github.com/tianocore/edk2.git
           cd edk2
-          # 更新子模块，这对于编译很多组件是必要的
-          git submodule update --init --recursive
+          git submodule update --init --recursive --depth=1
 
-      # 4. 设置 EDK2 编译环境
-      - name: Set up EDK2 build environment
+      # 6. 编译 BaseTools（EDK2 的基础工具）
+      - name: Build BaseTools
         run: |
           cd edk2
-          # 使 edksetup.sh 脚本可用
-          . edksetup.sh
-          # 编译 BaseTools，这是编译任何东西前的必要步骤
-          make -C BaseTools
+          make -C BaseTools -j$(nproc)
 
-      # 5. 执行编译
-      #    这里我们直接使用 build 命令编译 MdeModulePkg 中的这两个驱动
-      - name: Build Drivers
+      # 7. 设置 EDK2 编译环境并编译驱动
+      - name: Compile SD/MMC drivers
         run: |
           cd edk2
-          # 重新加载环境变量（有些步骤之间环境会丢失）
-          . edksetup.sh
-          # 编译 SdMmcPciHcDxe
-          build -a ${{ matrix.arch }} -t GCC5 -b ${{ matrix.target }} -p MdeModulePkg/MdeModulePkg.dsc -m MdeModulePkg/Bus/Pci/SdMmcPciHcDxe/SdMmcPciHcDxe.inf
-          # 编译 SdDxe
-          build -a ${{ matrix.arch }} -t GCC5 -b ${{ matrix.target }} -p MdeModulePkg/MdeModulePkg.dsc -m MdeModulePkg/Bus/Sd/SdDxe/SdDxe.inf
+          export EDK_TOOLS_PATH=$PWD/BaseTools
+          . edksetup.sh BaseTools
+          
+          # 可选：修改 target.txt 使用 GCC5 工具链
+          sed -i 's/^ACTIVE_PLATFORM.*/ACTIVE_PLATFORM = MdeModulePkg\/MdeModulePkg.dsc/' Conf/target.txt
+          sed -i 's/^TARGET.*/TARGET = ${{ matrix.target }}/' Conf/target.txt
+          sed -i 's/^TARGET_ARCH.*/TARGET_ARCH = ${{ matrix.arch }}/' Conf/target.txt
+          sed -i 's/^TOOL_CHAIN_TAG.*/TOOL_CHAIN_TAG = GCC5/' Conf/target.txt
+          
+          echo "=== Building SdMmcPciHcDxe ==="
+          build -m MdeModulePkg/Bus/Pci/SdMmcPciHcDxe/SdMmcPciHcDxe.inf
+          
+          echo "=== Building SdDxe ==="
+          build -m MdeModulePkg/Bus/Sd/SdDxe/SdDxe.inf
 
-      # 6. 上传编译好的驱动文件作为工作流产物
-      - name: Upload build artifacts
+      # 8. 查找并整理编译产物
+      - name: Find and prepare artifacts
+        run: |
+          mkdir -p output
+          find edk2/Build -name "*.efi" -type f | while read file; do
+            if [[ "$file" == *"SdMmcPciHcDxe"* ]] || [[ "$file" == *"SdDxe"* ]]; then
+              cp "$file" output/
+              echo "Copied: $file"
+            fi
+          done
+          ls -la output/
+
+      # 9. 上传编译产物
+      - name: Upload EFI drivers
         uses: actions/upload-artifact@v4
         with:
-          # 产物名称，包含架构和目标信息以便区分
           name: sd-mmc-drivers-${{ matrix.arch }}-${{ matrix.target }}
-          # 指定要上传的文件路径
-          path: |
-            edk2/Build/MdeModule/RELEASE_GCC5/${{ matrix.arch }}/SdMmcPciHcDxe.efi
-            edk2/Build/MdeModule/RELEASE_GCC5/${{ matrix.arch }}/SdDxe.efi
-          # 如果产物较大且不需要长期保留，可以设置保留天数
+          path: output/
+          if-no-files-found: error
           retention-days: 30
