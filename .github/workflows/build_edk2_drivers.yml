@@ -14,13 +14,13 @@ jobs:
         target: [RELEASE]
 
     steps:
-      # 1. 检出代码
+      # 1. 检出代码 - 使用支持 Node.js 24 的 v5 版本
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5  # 从 v4 升级到 v5
 
-      # 2. 设置 Node.js 24（即使 EDK2 不依赖 Node，但为了满足环境要求）
+      # 2. 设置 Node.js 24 - 使用支持 Node.js 24 的 v5 版本
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5  # 从 v4 升级到 v5
         with:
           node-version: '24'
 
@@ -36,14 +36,16 @@ jobs:
             nasm \
             python3 \
             python3-distutils \
-            python3-pip
+            python3-pip \
+            acpica-tools
 
-      # 4. 验证 Python 和 Node 版本（仅用于确认环境）
+      # 4. 验证 Python 和 Node 版本
       - name: Check versions
         run: |
           python3 --version
           node --version
           gcc --version
+          nasm --version
 
       # 5. 克隆 EDK2 并更新子模块
       - name: Clone EDK2 with submodules
@@ -52,7 +54,7 @@ jobs:
           cd edk2
           git submodule update --init --recursive --depth=1
 
-      # 6. 编译 BaseTools（EDK2 的基础工具）
+      # 6. 编译 BaseTools
       - name: Build BaseTools
         run: |
           cd edk2
@@ -65,22 +67,27 @@ jobs:
           export EDK_TOOLS_PATH=$PWD/BaseTools
           . edksetup.sh BaseTools
           
-          # 可选：修改 target.txt 使用 GCC5 工具链
-          sed -i 's/^ACTIVE_PLATFORM.*/ACTIVE_PLATFORM = MdeModulePkg\/MdeModulePkg.dsc/' Conf/target.txt
-          sed -i 's/^TARGET.*/TARGET = ${{ matrix.target }}/' Conf/target.txt
-          sed -i 's/^TARGET_ARCH.*/TARGET_ARCH = ${{ matrix.arch }}/' Conf/target.txt
-          sed -i 's/^TOOL_CHAIN_TAG.*/TOOL_CHAIN_TAG = GCC5/' Conf/target.txt
-          
+          # 编译 SdMmcPciHcDxe
           echo "=== Building SdMmcPciHcDxe ==="
-          build -m MdeModulePkg/Bus/Pci/SdMmcPciHcDxe/SdMmcPciHcDxe.inf
+          build -a ${{ matrix.arch }} \
+                -t GCC5 \
+                -b ${{ matrix.target }} \
+                -p MdeModulePkg/MdeModulePkg.dsc \
+                -m MdeModulePkg/Bus/Pci/SdMmcPciHcDxe/SdMmcPciHcDxe.inf
           
+          # 编译 SdDxe
           echo "=== Building SdDxe ==="
-          build -m MdeModulePkg/Bus/Sd/SdDxe/SdDxe.inf
+          build -a ${{ matrix.arch }} \
+                -t GCC5 \
+                -b ${{ matrix.target }} \
+                -p MdeModulePkg/MdeModulePkg.dsc \
+                -m MdeModulePkg/Bus/Sd/SdDxe/SdDxe.inf
 
       # 8. 查找并整理编译产物
       - name: Find and prepare artifacts
         run: |
           mkdir -p output
+          # 查找所有 .efi 文件，并复制匹配的驱动
           find edk2/Build -name "*.efi" -type f | while read file; do
             if [[ "$file" == *"SdMmcPciHcDxe"* ]] || [[ "$file" == *"SdDxe"* ]]; then
               cp "$file" output/
@@ -89,7 +96,7 @@ jobs:
           done
           ls -la output/
 
-      # 9. 上传编译产物
+      # 9. 上传编译产物 - upload-artifact v4 已经支持 Node.js 24
       - name: Upload EFI drivers
         uses: actions/upload-artifact@v4
         with:
