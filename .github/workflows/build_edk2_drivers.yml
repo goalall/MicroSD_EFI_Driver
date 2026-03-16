@@ -14,18 +14,27 @@ jobs:
     steps:
       # 1. 检出代码
       - name: Checkout repository
-        uses: actions/checkout@v5  # 支持 Node.js 24 的版本
+        uses: actions/checkout@v5
 
       # 2. 设置 Node.js 24
       - name: Setup Node.js
-        uses: actions/setup-node@v5  # 支持 Node.js 24 的版本
+        uses: actions/setup-node@v5
         with:
           node-version: '24'
 
-      # 3. 安装编译依赖 - 使用 setuptools 替代 distutils
-      - name: Install system dependencies
+      # 3. 修复 apt 源并安装依赖（增强版）
+      - name: Fix apt sources and install dependencies
         run: |
-          sudo apt-get update
+          # 确保 apt 源列表更新，并处理可能的锁定问题
+          sudo rm -f /var/lib/apt/lists/lock
+          sudo rm -f /var/cache/apt/archives/lock
+          sudo rm -f /var/lib/dpkg/lock-frontend
+          sudo dpkg --configure -a
+          
+          # 更新包列表（如果失败则重试）
+          sudo apt-get update || (sleep 5 && sudo apt-get update)
+          
+          # 安装编译所需的所有包
           sudo apt-get install -y \
             build-essential \
             uuid-dev \
@@ -34,31 +43,48 @@ jobs:
             nasm \
             python3 \
             python3-pip \
-            python3-setuptools \  # 替换了已移除的 python3-distutils
-            acpica-tools
+            python3-setuptools \
+            acpica-tools \
+            || (sleep 5 && sudo apt-get install -y -f)
+          
+          # 验证安装
+          dpkg -l | grep -E "python3-setuptools|acpica-tools|nasm"
 
-      # 4. 验证版本
+      # 4. 处理 Python 外部管理环境问题（针对 Ubuntu 24.04）
+      - name: Fix Python external management
+        run: |
+          # 如果存在外部管理标记文件，备份并删除（允许使用 pip）
+          if [ -f /usr/lib/python3.12/EXTERNALLY-MANAGED ]; then
+            sudo mv /usr/lib/python3.12/EXTERNALLY-MANAGED /usr/lib/python3.12/EXTERNALLY-MANAGED.bak
+            echo "Removed EXTERNALLY-MANAGED to allow pip installs"
+          fi
+          
+          # 升级 pip 和 setuptools
+          python3 -m pip install --upgrade pip setuptools wheel
+
+      # 5. 验证版本
       - name: Check versions
         run: |
           python3 --version
           node --version
           gcc --version
           nasm --version
+          pip3 list | grep setuptools
 
-      # 5. 克隆 EDK2 并更新子模块
+      # 6. 克隆 EDK2 并更新子模块
       - name: Clone EDK2 with submodules
         run: |
           git clone https://github.com/tianocore/edk2.git
           cd edk2
           git submodule update --init --recursive --depth=1
 
-      # 6. 编译 BaseTools
+      # 7. 编译 BaseTools
       - name: Build BaseTools
         run: |
           cd edk2
           make -C BaseTools -j$(nproc)
 
-      # 7. 设置 EDK2 编译环境并编译驱动
+      # 8. 设置 EDK2 编译环境并编译驱动
       - name: Compile SD/MMC drivers
         run: |
           cd edk2
@@ -81,7 +107,7 @@ jobs:
                 -p MdeModulePkg/MdeModulePkg.dsc \
                 -m MdeModulePkg/Bus/Sd/SdDxe/SdDxe.inf
 
-      # 8. 查找并整理编译产物
+      # 9. 查找并整理编译产物
       - name: Find and prepare artifacts
         run: |
           mkdir -p output
@@ -93,7 +119,7 @@ jobs:
           done
           ls -la output/
 
-      # 9. 上传编译产物
+      # 10. 上传编译产物
       - name: Upload EFI drivers
         uses: actions/upload-artifact@v4
         with:
