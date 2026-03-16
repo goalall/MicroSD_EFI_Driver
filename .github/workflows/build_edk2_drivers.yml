@@ -1,0 +1,64 @@
+name: Build EDK2 SD Drivers
+
+on:
+  workflow_dispatch: # 允许手动触发
+  push:
+    branches: [ main ]
+
+jobs:
+  build-drivers:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout edk2
+      uses: actions/checkout@v4
+      with:
+        repository: tianocore/edk2
+        ref: master # 或者指定某个稳定 tag，如 edk2-stable202311
+        submodules: recursive # 必须递归克隆子模块
+        fetch-depth: 1
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential uuid-dev iasl git nasm python3-distutils gcc-multilib
+        # EDK II 需要特定的 Python 包
+        pip3 install --user -U pip
+        pip3 install --user -r edk2/BaseTools/requirements.txt
+
+    - name: Setup EDK II Environment
+      run: |
+        cd edk2
+        # 初始化环境变量
+        make -C BaseTools
+        source edksetup.sh
+
+    - name: Build SdDxe and SdMmcPciHcDxe
+      run: |
+        cd edk2
+        # 编译 X64 架构的 RELEASE 版本
+        # -p 指定平台描述文件 (使用 MdeModulePkg.dsc 作为最小依赖集)
+        # -m 指定具体要编译的模块 inf 文件
+        # -a 指定架构 (X64, IA32, AARCH64, RISCV64 等)
+        # -b 指定构建类型 (RELEASE, DEBUG)
+        # -t 指定工具链 (GCC5 是 Ubuntu 上常用的)
+        
+        echo "Starting build for X64..."
+        build -a X64 -p MdeModulePkg/MdeModulePkg.dsc -m MdeModulePkg/Bus/Sd/SdDxe/SdDxe.inf -m MdeModulePkg/Bus/Pci/SdMmcPciHcDxe/SdMmcPciHcDxe.inf -b RELEASE -t GCC5
+
+    - name: Locate and Verify Outputs
+      run: |
+        cd edk2
+        # 查找生成的文件
+        find Build -name "SdDxe.efi" -o -name "SdMmcPciHcDxe.efi"
+        # 创建输出目录方便上传
+        mkdir -p output
+        cp Build/MdeModule/RELEASE_GCC5/X64/MdeModulePkg/Bus/Sd/SdDxe/OUTPUT/SdDxe.efi output/
+        cp Build/MdeModule/RELEASE_GCC5/X64/MdeModulePkg/Bus/Pci/SdMmcPciHcDxe/OUTPUT/SdMmcPciHcDxe.efi output/
+
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: EDK2-SD-Drivers-X64
+        path: edk2/output/*.efi
+        retention-days: 7
